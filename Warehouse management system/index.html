@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Warehouse Management System</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
+<style>
+  :root {
+    --bg:#f4f6fa; --card:#fff; --text:#1c2333; --muted:#6b7280; --border:#e3e7ee;
+    --primary:#2563eb; --ok:#16a34a; --low:#d97706; --out:#dc2626;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#12151c; --card:#1b1f2a; --text:#e8ebf2; --muted:#9aa3b5; --border:#2c3342; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--text); }
+  header { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; padding:16px 24px; background:var(--card); border-bottom:1px solid var(--border); }
+  h1 { font-size:20px; margin:0; }
+  main { max-width:1200px; margin:0 auto; padding:20px 16px 48px; }
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:12px; margin-bottom:20px; }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:14px 16px; }
+  .card .label { color:var(--muted); font-size:13px; }
+  .card .value { font-size:26px; font-weight:700; margin-top:4px; }
+  .panel { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:16px; margin-bottom:20px; }
+  .panel h2 { font-size:16px; margin:0 0 12px; }
+  form { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:12px; align-items:end; }
+  label { display:flex; flex-direction:column; gap:4px; font-size:13px; color:var(--muted); }
+  input, select { padding:9px 10px; border:1px solid var(--border); border-radius:6px; background:var(--bg); color:var(--text); font-size:14px; width:100%; }
+  button { padding:9px 14px; border:0; border-radius:6px; background:var(--primary); color:#fff; font-size:14px; cursor:pointer; font-weight:600; }
+  button.secondary { background:transparent; color:var(--text); border:1px solid var(--border); }
+  button.small { padding:5px 9px; font-size:12px; }
+  button.danger { background:var(--out); }
+  .toolbar { display:flex; flex-wrap:wrap; gap:10px; margin-bottom:12px; }
+  .toolbar input { flex:1; min-width:200px; } .toolbar select { width:auto; }
+  .table-wrap { overflow-x:auto; }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th, td { text-align:left; padding:10px 8px; border-bottom:1px solid var(--border); white-space:nowrap; }
+  th { color:var(--muted); font-weight:600; font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
+  .badge { display:inline-block; padding:3px 10px; border-radius:999px; font-size:12px; font-weight:600; color:#fff; }
+  .badge.in { background:var(--ok); } .badge.low { background:var(--low); } .badge.out { background:var(--out); }
+  .actions { display:flex; gap:6px; }
+  .empty { text-align:center; color:var(--muted); padding:28px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>📦 Warehouse Management System</h1>
+  <button id="exportBtn">Export PDF Report</button>
+</header>
+
+<main>
+  <section class="cards" id="cards"></section>
+
+  <section class="panel">
+    <h2 id="formTitle">Add Product</h2>
+    <form id="productForm">
+      <label>Product name<input name="name" required maxlength="80"></label>
+      <label>SKU<input name="sku" required maxlength="40"></label>
+      <label>Category<input name="category" list="cats" maxlength="40"><datalist id="cats"></datalist></label>
+      <label>Quantity<input name="quantity" type="number" min="0" step="1" required value="0"></label>
+      <label>Low-stock threshold<input name="threshold" type="number" min="0" step="1" required value="10"></label>
+      <label>Unit price (RM)<input name="price" type="number" min="0" step="0.01" value="0"></label>
+      <label>Location (e.g. A-01)<input name="location" maxlength="40"></label>
+      <div style="display:flex;gap:8px">
+        <button type="submit" id="saveBtn">Add Product</button>
+        <button type="button" class="secondary" id="cancelBtn" hidden>Cancel</button>
+      </div>
+    </form>
+  </section>
+
+  <section class="panel">
+    <h2>Inventory</h2>
+    <div class="toolbar">
+      <input id="search" placeholder="Search name, SKU, category, location…">
+      <select id="statusFilter">
+        <option value="">All statuses</option>
+        <option value="In Stock">In Stock</option>
+        <option value="Low Stock">Low Stock</option>
+        <option value="Out of Stock">Out of Stock</option>
+      </select>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th>Product</th><th>SKU</th><th>Category</th><th>Location</th><th>Qty</th><th>Price</th><th>Value</th><th>Status</th><th>Actions</th>
+        </tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<script>
+const KEY = 'wms.products.v1';
+let products = load();
+let editingId = null;
+
+function load() {
+  try { return JSON.parse(localStorage.getItem(KEY)) || []; } catch { return []; }
+}
+function save() {
+  try { localStorage.setItem(KEY, JSON.stringify(products)); } catch {}
+}
+const status = p => p.quantity <= 0 ? 'Out of Stock' : p.quantity <= p.threshold ? 'Low Stock' : 'In Stock';
+const cls = s => ({ 'In Stock':'in', 'Low Stock':'low', 'Out of Stock':'out' })[s];
+const money = n => 'RM ' +Number(n).toLocaleString(undefined, { minimumFractionDigits:2, maximumFractionDigits:2 });
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const $ = id => document.getElementById(id);
+
+function filtered() {
+  const q = $('search').value.trim().toLowerCase();
+  const st = $('statusFilter').value;
+  return products.filter(p =>
+    (!st || status(p) === st) &&
+    (!q || [p.name, p.sku, p.category, p.location].some(v => (v || '').toLowerCase().includes(q)))
+  );
+}
+
+function render() {
+  const total = products.length;
+  const units = products.reduce((a, p) => a + p.quantity, 0);
+  const value = products.reduce((a, p) => a + p.quantity * p.price, 0);
+  const low = products.filter(p => status(p) === 'Low Stock').length;
+  const out = products.filter(p => status(p) === 'Out of Stock').length;
+  $('cards').innerHTML = [
+    ['Products', total], ['Total units', units.toLocaleString()], ['Inventory value', money(value)],
+    ['Low stock', low], ['Out of stock', out]
+  ].map(([l, v]) => `<div class="card"><div class="label">${l}</div><div class="value">${v}</div></div>`).join('');
+
+  $('cats').innerHTML = [...new Set(products.map(p => p.category).filter(Boolean))]
+    .map(c => `<option value="${esc(c)}">`).join('');
+
+  const list = filtered();
+  $('rows').innerHTML = list.length ? list.map(p => {
+    const s = status(p);
+    return `<tr>
+      <td>${esc(p.name)}</td><td>${esc(p.sku)}</td><td>${esc(p.category)}</td><td>${esc(p.location)}</td>
+      <td>${p.quantity}</td><td>${money(p.price)}</td><td>${money(p.quantity * p.price)}</td>
+      <td><span class="badge ${cls(s)}">${s}</span></td>
+      <td class="actions">
+        <button class="small secondary" data-act="in" data-id="${p.id}" title="Add stock">+ Stock</button>
+        <button class="small secondary" data-act="out" data-id="${p.id}" title="Remove stock">− Stock</button>
+        <button class="small secondary" data-act="edit" data-id="${p.id}">Edit</button>
+        <button class="small danger" data-act="del" data-id="${p.id}">Delete</button>
+      </td></tr>`;
+  }).join('') : `<tr><td colspan="9" class="empty">${total ? 'No products match your filter.' : 'No products yet — add your first product above.'}</td></tr>`;
+}
+
+function resetForm() {
+  editingId = null;
+  $('productForm').reset();
+  $('productForm').threshold.value = 10;
+  $('formTitle').textContent = 'Add Product';
+  $('saveBtn').textContent = 'Add Product';
+  $('cancelBtn').hidden = true;
+}
+
+$('productForm').addEventListener('submit', e => {
+  e.preventDefault();
+  const f = e.target;
+  const data = {
+    name: f.name.value.trim(), sku: f.sku.value.trim(), category: f.category.value.trim(),
+    quantity: Math.max(0, parseInt(f.quantity.value, 10) || 0),
+    threshold: Math.max(0, parseInt(f.threshold.value, 10) || 0),
+    price: Math.max(0, parseFloat(f.price.value) || 0), location: f.location.value.trim()
+  };
+  if (products.some(p => p.id !== editingId && p.sku.toLowerCase() === data.sku.toLowerCase())) {
+    alert('A product with this SKU already exists.'); return;
+  }
+  if (editingId) {
+    products = products.map(p => p.id === editingId ? { ...p, ...data, updated: Date.now() } : p);
+  } else {
+    products.push({ id: crypto.randomUUID(), ...data, added: Date.now(), updated: Date.now() });
+  }
+  save(); resetForm(); render();
+});
+
+$('cancelBtn').addEventListener('click', resetForm);
+$('search').addEventListener('input', render);
+$('statusFilter').addEventListener('change', render);
+
+$('rows').addEventListener('click', e => {
+  const btn = e.target.closest('button[data-act]');
+  if (!btn) return;
+  const p = products.find(x => x.id === btn.dataset.id);
+  if (!p) return;
+  const act = btn.dataset.act;
+  if (act === 'del') {
+    if (confirm(`Delete "${p.name}"?`)) { products = products.filter(x => x !== p); save(); render(); }
+  } else if (act === 'edit') {
+    const f = $('productForm');
+    editingId = p.id;
+    f.name.value = p.name; f.sku.value = p.sku; f.category.value = p.category || '';
+    f.quantity.value = p.quantity; f.threshold.value = p.threshold; f.price.value = p.price; f.location.value = p.location || '';
+    $('formTitle').textContent = 'Edit Product';
+    $('saveBtn').textContent = 'Save Changes';
+    $('cancelBtn').hidden = false;
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  } else {
+    const n = parseInt(prompt(act === 'in' ? `Add how many units to "${p.name}"?` : `Remove how many units from "${p.name}"?`, '1'), 10);
+    if (!n || n < 0) return;
+    p.quantity = Math.max(0, p.quantity + (act === 'in' ? n : -n));
+    p.updated = Date.now();
+    save(); render();
+  }
+});
+
+$('exportBtn').addEventListener('click', () => {
+  if (!window.jspdf) { alert('PDF library failed to load. Check your internet connection and reload.'); return; }
+  if (!products.length) { alert('No products to export.'); return; }
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ orientation: 'landscape' });
+  const now = new Date();
+  const units = products.reduce((a, p) => a + p.quantity, 0);
+  const value = products.reduce((a, p) => a + p.quantity * p.price, 0);
+  const count = s => products.filter(p => status(p) === s).length;
+
+  doc.setFontSize(18); doc.text('Warehouse Inventory Report', 14, 16);
+  doc.setFontSize(10); doc.setTextColor(100);
+  doc.text(`Generated: ${now.toLocaleString()}`, 14, 23);
+  doc.text(`Products: ${products.length}   Units: ${units}   Value: ${money(value)}   In stock: ${count('In Stock')}   Low: ${count('Low Stock')}   Out: ${count('Out of Stock')}`, 14, 29);
+
+  const colors = { 'In Stock':[22,163,74], 'Low Stock':[217,119,6], 'Out of Stock':[220,38,38] };
+  doc.autoTable({
+    startY: 34,
+    head: [['Product','SKU','Category','Location','Qty','Threshold','Price','Value','Status']],
+    body: products.map(p => [p.name, p.sku, p.category || '', p.location || '', p.quantity, p.threshold, money(p.price), money(p.quantity * p.price), status(p)]),
+    headStyles: { fillColor: [37, 99, 235] },
+    styles: { fontSize: 9 },
+    didParseCell: d => {
+      if (d.section === 'body' && d.column.index === 8) {
+        d.cell.styles.textColor = colors[d.cell.raw]; d.cell.styles.fontStyle = 'bold';
+      }
+    },
+    didDrawPage: () => {
+      doc.setFontSize(8); doc.setTextColor(120);
+      doc.text(`Page ${doc.internal.getNumberOfPages()}`, doc.internal.pageSize.width - 25, doc.internal.pageSize.height - 8);
+    }
+  });
+  doc.save(`warehouse-report-${now.toISOString().slice(0, 10)}.pdf`);
+});
+
+render();
+</script>
+</body>
+</html>
